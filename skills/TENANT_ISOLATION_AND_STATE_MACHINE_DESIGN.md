@@ -40,7 +40,7 @@ Isolation is **defense-in-depth**. No single layer is trusted alone:
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│ L1  Identity        realm/issuer-per-tenant + tenant claim in JWT  │
+│ L1  Identity        single self-issued JWT; area (TENANT/ADMIN)    │
 │ L2  Request context per-request TenantContext (scoped holder)      │
 │ L3  Automatic data  ORM row filter activated per repository call   │
 │ L4  Explicit checks service-layer ownership validation (IDOR gate) │
@@ -53,29 +53,28 @@ The key separation of concerns: **authorization (L5) decides whether you may cal
 endpoint; tenant scoping (L2–L4) decides which rows you may touch.** Keep them orthogonal —
 mixing them produces both leaks and impossible-to-audit code.
 
-## 1.3 L1 — Identity: one authentication realm per tenant
+## 1.3 L1 — Identity: a single self-issued token; `area` is the boundary
 
-Use your IdP's native tenancy unit as the isolation boundary at the identity layer:
+This system does **not** use an external IdP or per-tenant realms (no Keycloak).
+Identity is a **self-issued JWT** signed with one secret (HS256), one issuer
+(`einvoicing`), validated on every request (`JwtTokenService.parse`: constant-time
+HMAC check + issuer + expiry). The token carries:
 
-- **One global realm** (e.g. `global` / `platform`) for platform operators.
-- **One realm per tenant** (e.g. `tenant-ACME`), provisioned idempotently by code
-  (a migration/synchronizer module that derives realms, roles, clients, and client scopes from
-  enums/config, guarded by a distributed lock so multiple replicas can start concurrently).
-- A **tenant claim** (e.g. `tenant_id`) is injected into every token issued by a tenant realm,
-  via a realm-specific client scope / token mapper. This claim — not anything the client sends —
-  is the authoritative tenant identity for interactive users.
+- `sub` (user id) and `email`,
+- `area` — `TENANT` or `ADMIN` — the coarse isolation boundary, and
+- `platformRole` (admin side).
 
-**Multi-realm token validation.** The resource server must accept tokens from N realms without
-redeploying when a tenant is added:
+The token deliberately does **not** carry an organization. There are no realms to
+provision, no per-tenant signing keys, no multi-realm decoder, and no realm
+discovery service. The **two areas** play the role that a "global realm vs tenant
+realm" split plays in IdP-based systems:
 
-- A `MultiRealmJwtDecoder`: parse the token's `iss` claim → **validate the issuer host against a
-  trusted-domain allowlist** (blocks forged tokens from look-alike issuers) → extract the realm
-  from the issuer path → look up that realm's JWKS URI → lazily build and cache a per-realm
-  decoder, rebuilding on JWKS change and evicting removed realms.
-- A **realm discovery service**: on startup and on a refresh interval, list realms from the IdP
-  admin API (excluding `master` and the global realm), publish the realm→JWKS map through an
-  atomic reference. Cache the last-known-good list in Redis/disk so an IdP outage at startup
-  degrades to "global realm only" instead of failing closed for everyone.
+- `area == ADMIN` → platform operator; eligible for cross-organization (global) access.
+- `area == TENANT` → tenant user; every request is scoped to exactly one organization (§1.4).
+
+Because there is a single issuer and key, issuer-allowlisting, JWKS rotation, and
+last-known-good realm caching do not apply here. Key management reduces to protecting
+the one signing secret (see the auth review's secret-handling item).
 
 ## 1.4 L2 — Request context: a scoped `TenantContext`
 
@@ -85,10 +84,9 @@ async runtimes):
 
 ```java
 public final class TenantContext {
-    // currentTenant     : the business tenant key, e.g. "ACME"
-    // currentTenantDbId : the tenant row's surrogate PK (used by the row filter)
-    // currentRealm      : identity realm the caller authenticated against
-    // globalAccess      : boolean, default false
+    // currentOrganizationId : the resolved organization UUID (used by the row filter)
+    // currentArea           : TENANT | ADMIN (from the JWT)
+    // globalAccess          : boolean, default (currentArea == ADMIN)
     static void setTenant(String tenantKey);
     static void setTenantDbId(UUID id);
     static void enableGlobalAccess();
@@ -103,12 +101,12 @@ public final class TenantContext {
 Populate it in a filter/middleware that runs **after** authentication, and clear it in
 `finally`. The resolution rules are the security-critical part:
 
-| Caller type | Authoritative tenant source | Client-sent header honored? |
+| Caller type | Authoritative organization source | Client-sent header honored? |
 |---|---|---|
-| Tenant-scoped interactive user | `tenant_id` **claim in the JWT** | **No — ignored.** A tenant user must never choose their tenant. |
-| Global operator | Optional `X-Tenant-ID` header — lets an admin scope into one tenant | Yes (they are trusted to cross tenants anyway) |
-| Server-to-server partner gateway | `X-Tenant-ID` header, **only after** a dedicated S2S auth filter has already authenticated that partner's API key against that same tenant | Yes, because it is cryptographically bound to the credential |
-| Channels scoped by a different axis (e.g. consumer mobile) | None — no tenant context is set | n/a (see §1.8) |
+| Tenant-scoped interactive user | `X-Organization-Id` header, **validated against `organization_members` on every request** | Only after the membership check confirms the authenticated user belongs to that **active** org (active membership + active org). An unverified header → 403. The user may switch among orgs they are a member of. |
+| Platform operator (ADMIN area) | Optional `X-Organization-Id` header — lets an admin scope into one org ("view as tenant") | Yes (ADMIN is trusted to cross orgs; membership check may be relaxed for admins per policy) |
+| Server-to-server partner (future ASP) | Bound to the authenticated partner credential, not a free header | Only after a dedicated S2S auth step binds the org to that credential |
+| Channels scoped by a different axis | None — no org context is set | n/a (see §1.8) |
 
 Also resolve and cache the tenant's **surrogate DB id** here (business key → PK lookup with a
 small in-memory cache) so the data layer can filter on an indexed FK column instead of a join.
@@ -198,14 +196,13 @@ prefers full opacity — pick one and be consistent). Two factory forms:
 
 ## 1.8 Global access and mixed-axis channels
 
-- **Global bypass is realm-driven, not role-driven.** The context filter compares the token's
-  realm to the configured global realm and sets `globalAccess`. Roles (`GLOBAL_ADMIN` vs
-  `TENANT_ADMIN`…) still gate endpoints (L5), but *row visibility* comes from the realm. This
-  keeps "who can see everything" a deployment-level fact, not something a role mapping typo can
-  grant.
-- A global operator may **scope into one tenant** by sending the tenant header; the context then
-  behaves exactly like a tenant user's (filter re-enabled for that one tenant). This gives
-  admins a "view as tenant" mode with zero extra code paths.
+- **Global bypass is area-driven, not role-driven.** The context filter reads the token's
+  `area`; `area == ADMIN` sets `globalAccess`. Roles/permissions (platform vs tenant) still gate
+  endpoints (L5), but *row visibility* comes from the area, not a role. This keeps "who can see
+  everything" a property of the authenticated area, not something a role-mapping typo can grant.
+- A platform operator may **scope into one organization** by sending the `X-Organization-Id`
+  header; the context then behaves exactly like a tenant user's (filter re-enabled for that one
+  org). This gives admins a "view as tenant" mode with zero extra code paths.
 - **Declare non-tenant channels explicitly.** If one API surface is scoped by a different axis
   (e.g. an end-consumer mobile API scoped per user rather than per tenant), the tenant filter's
   "no context → unfiltered" fall-through is only safe because *those* code paths apply their own
@@ -225,10 +222,10 @@ or constrain it.
 ## 1.10 Implementation checklist (tenant isolation)
 
 1. [ ] Tenant entity (UUID PK, unique business key, JSONB settings).
-2. [ ] IdP: global realm + per-tenant realm provisioning code (idempotent, lock-guarded,
-       hash-skip so restarts are cheap); tenant claim injected via client scope.
-3. [ ] Multi-realm token decoder with issuer-domain allowlist + realm discovery with
-       last-known-good cache.
+2. [ ] Self-issued JWT carrying `area` + user identity (no IdP/realms); single signing key,
+       issuer, and expiry validated on every request.
+3. [ ] Organization resolution from the `X-Organization-Id` header **validated against
+       `organization_members`** (active membership + active org); ADMIN "scope into org" path.
 4. [ ] `TenantContext` (+ scoped helpers for jobs/consumers) and `TenantService` façade.
 5. [ ] Context filter after auth: resolution table of §1.4, DB-id resolution+cache,
        `clear()` in finally, explicit skip-list for non-tenant channels.
@@ -236,16 +233,17 @@ or constrain it.
        indirectly-owned ones); activation aspect with the fail-closed branch.
 7. [ ] Explicit ownership checks on every load-by-id mutate/detail path;
        enumeration-safe denial exception.
-8. [ ] Endpoint authz (roles/permissions) kept orthogonal; global bypass realm-driven;
-       admin "scope into tenant" header.
+8. [ ] Endpoint authz (roles/permissions) kept orthogonal; global bypass area-driven
+       (`area == ADMIN`); admin "scope into org" header.
 9. [ ] Tests: cross-tenant read/write rejected on list *and* by-id paths; global sees all;
        global-scoped-into-tenant sees one; forged-issuer token rejected; missing-DB-id fails
        closed.
 
 ## 1.11 Known pitfalls
 
-- **Trusting a client header for tenant identity on tenant-user requests.** Only the JWT claim
-  is authoritative; headers are acceptable only for global admins and credential-bound S2S.
+- **Trusting a client header for org identity without validating it.** `X-Organization-Id` is
+  honored **only** after confirming the authenticated user's active membership in that org (or an
+  ADMIN operator scoping in). Never set org context from an unvalidated header.
 - **Native SQL / raw queries bypass ORM filters.** Either route them through the same predicate
   manually, or add DB-level RLS for those tables.
 - **Background jobs and message consumers have no request filter.** They must establish context
@@ -596,29 +594,40 @@ this is one of the explicit L4 checks.
 
 ## B. Reference implementation map (this repository)
 
-Generic term → concrete class, for agents working in this codebase:
+Generic term → where it lives (or would live) in `com.einvoicing.*`. **Status** is
+honest about what exists today vs. what this doc proposes.
 
-| Generic (this doc) | Reference implementation |
-|---|---|
-| Tenant | LFI (`Lfi` entity), `common/.../model/Lfi.java` |
-| `TenantContext` / `TenantService` / filter aspect | `common/.../multitenancy/{TenantContext,TenantService,TenantFilterAspect,TenantAware}.java` |
-| Context filter | `auth/.../filter/TenantContextFilter.java` |
-| Multi-realm decoder / realm discovery | `auth/.../decoder/MultiRealmJwtDecoder.java`, `web-api/.../service/RealmDiscoveryService.java` |
-| Realm provisioning | `keycloak-migration/.../service/LfiRealmSynchronizer.java` |
-| Enumeration-safe denial | `common/.../exception/LfiAccessDeniedException.java` |
-| Workflow session | `LfiSession` (`common/.../model/LfiSession.java`) |
-| Transition table / machine | `lfi-integration/.../statemachine/{StateTransitionConfig,StateMachineService}.java` |
-| Timeout scheduler + handlers | `lfi-integration/.../scheduler/UnifiedTimeoutScheduler.java`, `scheduler/handler/*` |
-| Session factory | `lfi-integration/.../service/LfiSessionFactory.java` |
-| Callback dispatcher/processor | `wallet-service/.../service/{LfiCallbackDispatcher,LfiCallbackService}.java` |
-| Retry / compensation | `wallet-service/.../processor/RetryQueueProcessor.java`, `processor/support/TransactionProcessorSupport.java` |
-| Table-pinning tests | `lfi-integration/src/test/java/.../statemachine/StateMachineServiceTest.java` |
+### Part 1 — Tenant isolation
+| Generic (this doc) | This repository | Status |
+|---|---|---|
+| Tenant | `Organization` — `persistence/.../auth/entity/OrganizationEntity.java`; membership via `OrganizationMemberEntity` | implemented |
+| `TenantContext` | `auth/.../security/TenantContext.java` (ThreadLocal, org id only) | implemented — partial (holds org id; member role to be added per `RBAC_DESIGN.md`) |
+| Context filter | `auth/.../security/TenantContextFilter.java` | implemented |
+| Current-user / principal | `auth/.../security/CurrentUser.java`, `AuthenticatedPrincipal.java` | implemented |
+| Token issue / validate | `auth/.../security/JwtTokenService.java`, `JwtAuthenticationFilter.java` | implemented (self-issued HS256; no realms) |
+| L3 automatic row filter | **none** — isolation is via explicit `…AndOrganizationId` queries (e.g. `persistence/.../invoicing/repository/InvoiceRepository.findByIdAndOrganizationId`) | not implemented — explicit scoping only; `@TenantAware` + Hibernate `@Filter` aspect is a future option |
+| L4 explicit ownership check | service `getExisting(orgId, id)` methods (e.g. `invoicing/.../service/InvoiceService.getExisting`) | partial — see review S2/S4; line-table repos not org-scoped |
+| Enumeration-safe denial | `common/.../exceptions/ResourceNotFoundException.java` (+ `ForbiddenAuthException`, `GlobalExceptionHandler`) | implemented — a dedicated tenant-access-denied type is optional |
+| L5 endpoint authorization | see [`RBAC_DESIGN.md`](./RBAC_DESIGN.md) | not implemented — planned (review S1) |
+
+### Part 2 — Workflow state machine
+Nothing here is built yet; document/invoice lifecycle is the first candidate.
+| Generic (this doc) | This repository | Status |
+|---|---|---|
+| Workflow session entity | — | not implemented — planned (document lifecycle, future ASP submission) |
+| Transition table / machine | invoice/credit-note status guards live ad-hoc in entity methods (`persistence/.../invoicing/entity/InvoiceEntity.issue/cancel/requireDraft`, `CreditNoteEntity`) | not implemented as a machine — §2 is the target design |
+| Timeout scheduler + handlers | `auth/.../service/RefreshTokenCleanupJob.java` is the only `@Scheduled` job today | not implemented for workflows — planned |
+| Session factory | — | not implemented — planned |
+| Callback dispatcher / processor | — | not implemented — planned (ASP callbacks) |
+| Retry / compensation | — | not implemented — planned |
+| Table-pinning tests | `vat/.../VatCalculatorTests.java` exists but is unrelated | not implemented — planned alongside the machine |
 
 ## C. Stack translation notes
 
 | Mechanism (Spring/Hibernate) | Equivalent elsewhere |
 |---|---|
 | ThreadLocal `TenantContext` | Node `AsyncLocalStorage`, Python `contextvars`, Go `context.Context`, .NET `AsyncLocal` |
+| Self-issued JWT `area` claim | Realm-per-tenant + `iss` allowlist in IdP-based systems (Keycloak/Auth0/Cognito) — **not used here** |
 | Hibernate `@Filter` + aspect | Postgres RLS + session GUC; Prisma client extensions; Django custom managers; Rails default scopes |
 | `@Version` optimistic locking | `version`/`updated_at` compare-and-set column in any ORM, or `WHERE version = ?` in raw SQL |
 | ShedLock distributed lock | Redis `SET NX PX`, Postgres advisory locks, k8s leader election |
