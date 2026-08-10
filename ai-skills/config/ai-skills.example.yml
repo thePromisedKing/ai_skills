@@ -1,0 +1,195 @@
+# .ai-skills/config.yml — project configuration for the ai-skills suite.
+#
+# Copy to <repo-root>/.ai-skills/config.yml and edit. `project-config` validates
+# this file and every other skill reads it through that owner; no skill
+# hard-codes a command, path, branch, ticket prefix, or gate.
+#
+# Anything you leave at a placeholder value is reported as NEEDS_INPUT rather
+# than guessed.
+
+schema_version: 1
+
+project:
+  name: order-service
+  # Base package used to distinguish first-party code from dependencies in
+  # scans, ArchUnit rules, and review scope. Required.
+  base_package: com.example.orders
+  # Optional. When present, the suite treats these as the authoritative module
+  # list and refuses to target a module that is not listed. Leave empty for a
+  # single-module project.
+  modules: []
+  # Optional free-text note the standards layer surfaces to reviewers, e.g.
+  # "payment service; monetary amounts are Long minor units".
+  domain_notes: ""
+
+build:
+  # auto | maven | gradle. `auto` detects mvnw/pom.xml vs gradlew/build.gradle.
+  tool: auto
+  # Optional overrides. When null, project-config derives the command from the
+  # detected tool. Override when the project wraps its build (make, task, nx).
+  commands:
+    compile: null          # maven: ./mvnw -q -DskipTests compile
+    unit_test: null        # maven: ./mvnw -q test
+    focused_test: null     # maven: ./mvnw -q test -Dtest={selection}
+    verify: null           # maven: ./mvnw -q verify
+    full_build: null       # maven: ./mvnw -q clean verify
+  # Java release the project targets. Used for language-feature guidance only.
+  java_release: 21
+
+branches:
+  # The default candidate base. Always confirmed with the user; never assumed.
+  default_base: main
+  # Direct commits to these are refused. Globs allowed.
+  protected: [main, master, develop, "release/*"]
+  # Informational: the naming convention proposed when a new branch is needed.
+  feature_pattern: "feature/{work_id}-{slug}"
+
+commit:
+  # {work_id} resolves to the tracker key, or is dropped when the adapter is
+  # `none`. {title} is the human-approved implementation title.
+  subject_template: "{work_id} :: {title}"
+  # When true, every commit in one workflow reuses the identical subject and
+  # puts the stage/slice detail in the body. Recommended.
+  require_stable_subject: true
+  # Trailer appended to every commit body. Leave empty for none.
+  trailer: ""
+
+tracker:
+  # jira | odoo | github | file | none
+  #   none  -> requirements come only from the prompt and requirement sources
+  #   file  -> Markdown work items under tracker.file.root
+  adapter: none
+
+  jira:
+    base_url: https://example.atlassian.net
+    project_key: ORD
+    key_pattern: "ORD-[0-9]+"
+    # Names of environment variables holding the credentials. The suite never
+    # reads a credential from this file and never prints one.
+    credentials_env: [JIRA_EMAIL, JIRA_API_TOKEN]
+    # Status the work item moves to after a PR exists. Empty disables the
+    # transition entirely.
+    in_review_status: "In Review"
+
+  odoo:
+    base_url: https://example.odoo.com
+    database: example
+    # project.project id the tasks belong to.
+    project_id: 0
+    credentials_env: [ODOO_LOGIN, ODOO_API_KEY]
+    # project.task stage name used after a PR exists. Empty disables it.
+    in_review_stage: "In Review"
+
+  github:
+    # owner/repo. Uses the `gh` CLI and its existing authentication.
+    repo: example/order-service
+    # Label applied when a PR exists. Empty disables it.
+    in_review_label: ""
+
+  file:
+    # Directory of Markdown work items, one file per item. The filename stem is
+    # the work id. Writes append a dated section; they never rewrite the file.
+    root: docs/work-items
+
+requirements:
+  # Ordered highest authority first. Every source is read-only to the suite.
+  sources:
+    - id: flows
+      path: docs/flows
+      glob: "**/*.md"
+    - id: adr
+      path: docs/adr
+      glob: "**/*.md"
+  # When true, a requirement may exist only in the user's prompt. When false,
+  # every requirement must trace to a source file or a tracker item.
+  allow_prompt_only: true
+  # When true, a source directory that is configured but missing or empty stops
+  # the workflow with NEEDS_INPUT instead of proceeding without it.
+  require_sources_populated: false
+
+gates:
+  # Every gate takes a mode:
+  #   enabled  -> required. A missing tool is BLOCKED.
+  #   auto     -> run when the tool is detected; otherwise recorded
+  #               SKIPPED_UNAVAILABLE as a limitation. Does not block.
+  #   disabled -> never run; recorded SKIPPED_DISABLED.
+  #
+  # A skipped gate is never reported as a pass.
+
+  format:
+    mode: auto
+    tool: spotless            # spotless | none
+  checkstyle:
+    mode: auto
+    config: config/checkstyle/checkstyle.xml
+  pmd:
+    mode: auto
+    ruleset: config/pmd/ruleset.xml
+  spotbugs:
+    mode: auto
+    include_findsecbugs: true
+  errorprone:
+    mode: disabled
+    nullaway: false
+  coverage:
+    mode: auto
+    tool: jacoco
+    # Line coverage floor for lines the change touched. Null disables the check
+    # while still collecting the report.
+    min_changed_line_coverage: 80
+    # Refuse a change that lowers overall project coverage.
+    ratchet: true
+  archunit:
+    mode: auto
+    # Test selection that holds the architecture rules.
+    test_pattern: "**/*ArchTest.java"
+  sonar:
+    mode: auto
+    project_key: order-service
+    # Executable name of the non-agentic Sonar developer CLI.
+    cli: sonar
+    # Analyze only the staged diff, never the whole project.
+    scope: staged
+  semgrep:
+    mode: auto
+    config: p/java
+  trivy:
+    mode: auto
+    scanners: [vuln, secret, misconfig]
+    severity: [HIGH, CRITICAL]
+  dependency_check:
+    mode: disabled
+    fail_on_cvss: 7
+
+testing:
+  # Levels the project actually supports. A test inventory may only assign a
+  # level listed here.
+  levels: [unit, slice, integration, contract, e2e]
+  # Integration tests that need real infrastructure.
+  testcontainers: true
+  # Command selection template used for focused runs during TDD.
+  focused_selection_hint: "class or method pattern"
+
+review:
+  # Run the internal independent review at the end of every implementation.
+  independent_review: true
+  # Maximum review/fix rounds before stopping with NEEDS_INPUT.
+  max_rounds: 3
+
+parallel:
+  # Hard upper bound on concurrent TDD groups and final-gate lanes. Chosen so a
+  # developer machine keeps one core free for the coordinator; lower it on
+  # constrained hardware.
+  max_concurrent_groups: 5
+
+approvals:
+  # Actions that always require an explicit human yes, regardless of mode.
+  # Removing an entry weakens the suite; do so deliberately.
+  required:
+    - architecture_selection
+    - base_branch_confirmation
+    - scope_expansion
+    - push
+    - pull_request_creation
+    - tracker_write
+    - parallel_plan
