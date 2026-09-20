@@ -24,6 +24,7 @@ and into one configuration file.
 | Front-end gates | ESLint, `tsc`, Vitest, and Playwright, each rooted at the package manifest it governs |
 | Front-end standards | `web-engineering-standards`, aggregated for a `web` target |
 | Code graph | `graphify` builds it; `project-config` resolves it and `review-pr` queries it when present |
+| Graph output | `graphify-out/` is added to the target repository's `.gitignore` at install; the graph is a rebuildable cache, never a tracked artifact |
 | Missing tooling | An `auto` gate whose tool is absent is recorded `SKIPPED_UNAVAILABLE`, never silently passed |
 | Module graph | Read from the project's own configuration, not hard-coded |
 
