@@ -130,6 +130,36 @@ probe_binary sonar   "${SONAR_CLI:-sonar}"
 probe_binary semgrep semgrep
 probe_binary trivy   trivy
 
+# --- Front-end gates -------------------------------------------------------
+# Each is rooted at its own package manifest, named per gate by <GATE>_ROOT.
+# Both the declaration and the installed binary must be present: a dependency
+# listed in package.json with no node_modules entry cannot execute, and
+# reporting it available would produce a gate that fails on first invocation
+# for an environmental reason rather than a code one.
+probe_npm() {
+  local id="$1" root="$2" dep="$3" bin="$4"
+  wanted "$id" || return 0
+  if [ -z "$root" ]; then
+    emit "$id" "missing" "no root configured"
+    return 0
+  fi
+  local manifest="${ROOT}/${root}/package.json"
+  if [ ! -f "$manifest" ]; then
+    emit "$id" "missing" "${root}/package.json not found"
+  elif ! grep -qsE "\"${dep}\"[[:space:]]*:" "$manifest"; then
+    emit "$id" "missing" "${dep} not declared in ${root}/package.json"
+  elif [ ! -x "${ROOT}/${root}/node_modules/.bin/${bin}" ]; then
+    emit "$id" "missing" "${dep} declared but ${root}/node_modules/.bin/${bin} absent"
+  else
+    emit "$id" "available" "${root}/node_modules/.bin/${bin}"
+  fi
+}
+
+probe_npm eslint     "${ESLINT_ROOT:-}"     eslint           eslint
+probe_npm tsc        "${TSC_ROOT:-}"        typescript       tsc
+probe_npm vitest     "${VITEST_ROOT:-}"     vitest           vitest
+probe_npm playwright "${PLAYWRIGHT_ROOT:-}" @playwright/test playwright
+
 # --- Config files the gates require ---------------------------------------
 probe_config() {
   local id="$1" path="$2"

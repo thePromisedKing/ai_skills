@@ -39,7 +39,7 @@ CHECKLIST_EXEMPT="engineering-standards java-engineering-standards test-engineer
 EXAMPLE_EXEMPT="workflow-contracts"
 
 # The closed gate roster. Every place that names a gate must name exactly these.
-GATES="format checkstyle pmd spotbugs errorprone coverage archunit sonar semgrep trivy dependency_check"
+GATES="format checkstyle pmd spotbugs errorprone coverage archunit sonar semgrep trivy dependency_check eslint tsc vitest playwright"
 
 skill_dirs=()
 while IFS= read -r d; do skill_dirs+=("$d"); done < <(

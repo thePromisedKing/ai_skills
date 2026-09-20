@@ -161,6 +161,42 @@ gates:
     mode: disabled
     fail_on_cvss: 7
 
+  # Front-end gates. Each names the tree it governs and the command to run;
+  # neither is inferred, because the suite detects Maven and Gradle, not
+  # package managers. A repository with no JavaScript or TypeScript tree
+  # declares all four disabled.
+  eslint:
+    mode: disabled
+    root: web
+    command: 'npm --prefix web run lint'
+  tsc:
+    mode: disabled
+    root: web
+    command: 'npm --prefix web exec tsc -- --noEmit'
+  vitest:
+    mode: disabled
+    root: web
+    command: 'npm --prefix web run test -- --run'
+  playwright:
+    mode: disabled
+    root: web
+    command: 'npm --prefix web exec playwright test'
+
+context:
+  # A code graph the workflow skills query for structure — who calls a changed
+  # symbol, what it depends on — instead of rediscovering it by reading files.
+  # Omit this block entirely if the project has no graph.
+  code_graph:
+    # auto     -> query it when tool and artifact are both present; proceed
+    #             without it otherwise, recording the absence as a limitation.
+    # enabled  -> required; a missing tool or artifact BLOCKS.
+    # disabled -> never queried.
+    mode: disabled
+    tool: graphify
+    path: graphify-out/graph.json
+    # Must contain the {question} placeholder.
+    query_command: 'graphify query "{question}"'
+
 testing:
   # Levels the project actually supports. A test inventory may only assign a
   # level listed here.

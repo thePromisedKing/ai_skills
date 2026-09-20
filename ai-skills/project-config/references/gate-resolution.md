@@ -82,6 +82,25 @@ coordinate — a cheap, side-effect-free signal. It is deliberately weaker than
 running the task: a declared plugin that fails on first invocation reports a
 gate `FAIL`, which is the correct and visible outcome.
 
+### Front-end gates
+
+These four analyze the tree named by the gate's `root`, not the Java sources,
+and run the gate's configured `command` from the repository root. The probe
+reads `<root>/package.json` and `<root>/node_modules`; it never installs
+anything, so a tree whose dependencies have not been installed probes
+`missing` rather than triggering a download mid-workflow.
+
+| Gate | Probe | Command |
+| --- | --- | --- |
+| `eslint` | `eslint` in `<root>` dependencies **and** `<root>/node_modules/.bin/eslint` present | `gates.eslint.command` |
+| `tsc` | `typescript` in `<root>` dependencies **and** `<root>/node_modules/.bin/tsc` present | `gates.tsc.command` |
+| `vitest` | `vitest` in `<root>` dependencies **and** `<root>/node_modules/.bin/vitest` present | `gates.vitest.command` |
+| `playwright` | `@playwright/test` in `<root>` dependencies **and** `<root>/node_modules/.bin/playwright` present | `gates.playwright.command` |
+
+A declared dependency whose binary is absent is `missing`, not available: an
+uninstalled tree would otherwise report a gate that cannot execute as ready to
+run.
+
 Sonar is the one gate whose scope is fixed by contract rather than
 configuration: it analyzes the staged index only, never the whole project. See
 `quality-gate` for why.

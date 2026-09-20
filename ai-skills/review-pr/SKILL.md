@@ -59,6 +59,16 @@ GitHub.
 4. Ground the change: invoke `requirement-context` so findings can be judged
    against what the change was required to do, rather than against what the
    reviewer would have built.
+5. Establish blast radius before reading any file. For each symbol the diff
+   adds, changes, or deletes, resolve who calls it, what it calls, and whether
+   a test covers that path. When `project-config` reports `context.code_graph`
+   usable, query the graph through the skill that owns it — `graphify` — and
+   keep each query's budget small; the point is a few hundred tokens of callers
+   and callees, not a dump. When it is not usable, derive the same answer from
+   targeted searches keyed off the changed symbols. Either way, read code only
+   to confirm a stated suspicion. Reconstructing structure by reading whole
+   files costs the budget that the rest of the review needs, and a symbol's
+   caller count is what separates a leaf defect from a regression.
 
 ## Route specialist reviewers
 
@@ -161,7 +171,9 @@ rejection path — one `DISCARDED` with the line that contradicted it, and
 - Never submit a review, post a comment, or resolve a thread without explicit
   authorization of that exact content.
 - Never submit an `APPROVE` event.
-- Never report a finding without opening the code and checking it.
+- Never report a finding without opening the code and checking it, and never
+  cite a `file:line` not confirmed against the head revision under review. An
+  unverified line number reads as evidence and is not.
 - Never present a partial diff read as a complete review.
 - Never repeat a finding the existing discussion already resolved.
 - Never review against a preference the project's standards and requirements do
