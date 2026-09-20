@@ -82,7 +82,7 @@ fi
 TARGETS=(".claude" ".agents")
 # Skills removed from the suite. Listed so a stale local install cannot shadow
 # the current owner of a lifecycle. Append here when retiring a skill.
-RETIRED_SKILLS=()
+RETIRED_SKILLS=(jira-ticket react-testing)
 
 target_is_current() {
   local dest_skills="${TARGET_ROOT}/$1/skills"

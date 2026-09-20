@@ -32,7 +32,7 @@ bad()  { FAIL=$((FAIL+1)); printf '  FAIL  %s\n' "$1"; return 0; }
 
 # Skills exempt from the progress-checklist requirement, per the authoring
 # standards: read-only single-evaluation skills and pure reference material.
-CHECKLIST_EXEMPT="engineering-standards java-engineering-standards test-engineering-standards workflow-contracts"
+CHECKLIST_EXEMPT="engineering-standards java-engineering-standards test-engineering-standards web-engineering-standards workflow-contracts"
 
 # workflow-contracts is reference material with no invocation of its own, so it
 # carries no worked example. Every other skill must show both vendor forms.
@@ -269,7 +269,7 @@ for dir in "${skill_dirs[@]}"; do
       && ok "${name}: refers to existing skill ${ref}" \
       || bad "${name}: refers to '${ref}', which is not a skill in this suite"
   done < <(
-    grep -ohE '`(project-config|engineering-standards|java-engineering-standards|test-engineering-standards|tracker-context|requirement-context|architecture-plan|workflow-contracts|spring-workflow|implement-task|quality-gate|security-scan|api-test-workflow|review-pr|fix-pr|skills-manager|quota-handoff)`' \
+    grep -ohE '`(project-config|engineering-standards|java-engineering-standards|test-engineering-standards|tracker-context|requirement-context|architecture-plan|workflow-contracts|spring-workflow|implement-task|quality-gate|security-scan|api-test-workflow|review-pr|fix-pr|skills-manager|quota-handoff|web-engineering-standards)`' \
       "${dir}/SKILL.md" | tr -d '`' | sort -u
   )
 done
