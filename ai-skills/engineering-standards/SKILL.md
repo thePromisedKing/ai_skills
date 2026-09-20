@@ -11,6 +11,12 @@ mutation boundaries; this skill never edits a file.
 
 ## Scope
 
+A `web` target routes to `web-engineering-standards`. It is the one target
+whose code the baseline's Java rules do not describe, so the specialization
+carries the whole of it; the baseline still governs the cross-cutting concerns
+that hold in any language — reuse, boundary validation, security, observability,
+and commit hygiene.
+
 The baseline applies to every target in a Spring Boot repository: production
 Java, test code, build configuration, database migrations, and skill authoring
 under the suite's own directory. `java` and `test` each have a maintained
@@ -24,7 +30,7 @@ Accept:
 ```yaml
 caller: spring-workflow | implement-task | architecture-plan | review-pr | fix-pr | quality-gate | security-scan | api-test-workflow | skills-manager | direct
 purpose: implementation | review-generation | review-classification | gate-remediation | authoring | routing
-target: java | test | build | migration | skills | mixed
+target: java | test | build | migration | skills | web | mixed
 paths: [relevant repository paths]
 sources:
   authority_order: [highest to lowest]

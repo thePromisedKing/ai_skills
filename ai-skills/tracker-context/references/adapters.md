@@ -59,7 +59,18 @@ Atlassian Cloud REST v3. Credentials: the two variables named in
   status precedes another.
 - Creating an issue is permitted only for a confirmed defect, one at a time,
   each individually approved, with no assignee, priority, sprint, or fix version
-  set.
+  set. `create <type> <summary> <body-file>` implements exactly that, and refuses
+  a type or component the project does not define rather than letting Jira reject
+  the call with a less legible error. `--dry-run` returns the field payload
+  without writing. Optional `--parent`, `--component`, and repeated `--label`.
+- The body file is markdown and is converted to Atlassian Document Format, which
+  REST v3 requires. Headings, lists, fenced code, blockquotes, rules, and inline
+  bold, italic, code and links are carried across; anything else degrades to
+  plain text. The same conversion applies to `comment`.
+- A project whose boards are filter-backed on `components` needs the component
+  set at creation time, because that field is what decides where the item shows
+  up. Record which component a board follows in the project's configuration
+  comments; the adapter does not infer board membership.
 
 ## Odoo
 

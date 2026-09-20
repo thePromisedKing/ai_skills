@@ -43,6 +43,12 @@ Accept `mode`:
 | `test-note` | one QA/test-coverage comment on the primary item or its test child |
 | `transition` | one guarded status change after a PR exists |
 | `defect` | one comment on a named related item reporting work that belongs to it |
+| `file` | one new item for a confirmed defect, where the adapter permits it |
+
+`file` is the one mode that creates rather than annotates, so it carries the
+heaviest evidence bar: a defect someone confirmed, not a suspicion, and one item
+per approval. Preview it with `--dry-run`, which returns the exact field payload
+and writes nothing.
 
 Every write requires: a passing engine or QA result as evidence, the exact text,
 and the user's explicit approval of that text and target. `tracker_write` is in

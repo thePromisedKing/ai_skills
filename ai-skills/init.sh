@@ -21,6 +21,9 @@ set -euo pipefail
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_ROOT=""
 MODE="install"
+# The directory graphify writes into. Named once here because the installer, the
+# configuration template, and the skill all have to agree on it.
+GRAPH_DIR="graphify-out"
 INSTALL_HOOKS=false
 WRITE_CONFIG=false
 
@@ -82,7 +85,7 @@ fi
 TARGETS=(".claude" ".agents")
 # Skills removed from the suite. Listed so a stale local install cannot shadow
 # the current owner of a lifecycle. Append here when retiring a skill.
-RETIRED_SKILLS=()
+RETIRED_SKILLS=(jira-ticket react-testing)
 
 target_is_current() {
   local dest_skills="${TARGET_ROOT}/$1/skills"
@@ -127,8 +130,36 @@ drift_report() {
   return 1
 }
 
+# --- Keep the code graph out of version control ----------------------------
+# graphify ships with the suite, and its output is a rebuildable cache keyed to
+# one working tree: committing it means merge conflicts on a file nobody reads
+# and a graph that is stale in every clone but the one that built it. Only a git
+# work tree gets this - installing into a home directory must not write a
+# .gitignore there.
+ensure_graph_ignored() {
+  git -C "$TARGET_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  # check-ignore honours a parent .gitignore, a global excludesfile, and
+  # .git/info/exclude, so an entry already covered elsewhere is not duplicated.
+  if git -C "$TARGET_ROOT" check-ignore -q "${GRAPH_DIR}/" 2>/dev/null; then
+    [ "$MODE" = "check" ] && return 0
+    echo "gitignore: ${GRAPH_DIR}/ is already ignored."
+    return 0
+  fi
+  if [ "$MODE" = "check" ]; then
+    echo "drift: ${GRAPH_DIR}/ is not ignored in ${TARGET_ROOT}/.gitignore"
+    return 1
+  fi
+  local target="${TARGET_ROOT}/.gitignore"
+  [ -s "$target" ] && printf '\n' >> "$target"
+  printf '%s\n%s/\n' \
+    "# graphify knowledge-graph output (rebuildable: \`graphify update .\`)" \
+    "$GRAPH_DIR" >> "$target"
+  echo "gitignore: added ${GRAPH_DIR}/ to ${target}."
+}
+
 if [ "$MODE" = "check" ]; then
   status=0
+  ensure_graph_ignored || status=1
   for target in "${TARGETS[@]}"; do
     drift_report "$target" || status=1
   done
@@ -222,6 +253,8 @@ elif [ ! -f "$config_path" ]; then
   echo "        Run with --write-config to create it from the annotated template."
   echo "        Skills return NEEDS_INPUT until it exists and validates."
 fi
+
+ensure_graph_ignored || true
 
 # --- Optional drift hook ---------------------------------------------------
 if [ "$INSTALL_HOOKS" = true ]; then

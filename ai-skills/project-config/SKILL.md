@@ -19,7 +19,8 @@ Copy this checklist and check off each item as it completes:
 - [ ] 1 Configuration located and schema-validated
 - [ ] 2 Build tool and commands resolved
 - [ ] 3 Gate roster resolved against probed tool availability
-- [ ] 4 PROJECT_CONFIG_RESULT returned with limitations recorded
+- [ ] 4 Code graph resolved, or recorded absent
+- [ ] 5 PROJECT_CONFIG_RESULT returned with limitations recorded
 ```
 
 ## Invocation
@@ -62,6 +63,12 @@ so the result stays small.
 6. Resolve requirement sources. Record which configured paths exist and which
    are populated. When `requirements.require_sources_populated` is true, an
    empty or missing configured source is `NEEDS_INPUT` naming that path.
+7. Resolve `context.code_graph` when the block is present. Probe the tool on
+   `PATH` and check the artifact at `code_graph.path`; both must hold for
+   `usable: true`. Under `auto`, either one absent is a limitation and the
+   result still returns `PASS`. Under `enabled`, it is `BLOCKED`. Never report
+   a graph usable without probing it, and never rebuild one — regenerating a
+   cache is the caller's decision, not a side effect of reading configuration.
 
 ## Result
 
@@ -94,6 +101,14 @@ PROJECT_CONFIG_RESULT:
       tool: name or null
       probe: command and outcome
       settings: <gate-specific block>
+  context:
+    code_graph:
+      mode: auto | enabled | disabled
+      usable: true | false
+      tool: name or null
+      path: path or null
+      query_command: template or null
+      probe: command and outcome
   parallel: {max_concurrent_groups}
   approvals: {required: [...]}
   limitations: [skipped gate and reason, unpopulated source, unverified probe]

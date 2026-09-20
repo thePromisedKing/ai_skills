@@ -4,6 +4,11 @@ A portable, project-agnostic agent skill suite that enforces engineering
 standards and code quality on any Java Spring Boot codebase, under Claude Code
 or the OpenAI Codex CLI.
 
+The standards, the implementation engine, and the review lenses are Java and
+Spring Boot. The gate roster reaches wider: a repository whose Java service
+ships alongside a JavaScript or TypeScript tree gates that tree too, so the
+front end is not the one directory nothing checks.
+
 It is a generalization of a production suite: the same lifecycle, evidence, and
 approval contracts, with every project-specific decision moved out of the skills
 and into one configuration file.
@@ -16,6 +21,10 @@ and into one configuration file.
 | Requirements | User prompt and/or Markdown flow documents. No HLD/LLD/FSD hierarchy |
 | Build tool | Detected at runtime — Maven or Gradle |
 | Quality gates | Declared per project; each gate is `enabled`, `auto`, or `disabled` |
+| Front-end gates | ESLint, `tsc`, Vitest, and Playwright, each rooted at the package manifest it governs |
+| Front-end standards | `web-engineering-standards`, aggregated for a `web` target |
+| Code graph | `graphify` builds it; `project-config` resolves it and `review-pr` queries it when present |
+| Graph output | `graphify-out/` is added to the target repository's `.gitignore` at install; the graph is a rebuildable cache, never a tracked artifact |
 | Missing tooling | An `auto` gate whose tool is absent is recorded `SKIPPED_UNAVAILABLE`, never silently passed |
 | Module graph | Read from the project's own configuration, not hard-coded |
 
@@ -70,6 +79,8 @@ Start from `config/ai-skills.example.yml`, which documents every field.
 | Run the configured security scanners | `security-scan` |
 | Plan and implement API test coverage | `api-test-workflow` |
 | Compare implementation approaches before writing code | `architecture-plan` |
+| Review or plan front-end work under a `web` target | `web-engineering-standards` |
+| Build or query a code graph of the repository | `graphify` |
 | Create, split, merge, retire, or change a skill in this suite | `skills-manager` |
 | Transfer an active workflow when a vendor quota runs out | `quota-handoff` |
 

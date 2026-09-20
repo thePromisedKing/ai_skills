@@ -133,7 +133,12 @@ Every gate id in the closed roster must be present with a `mode` of `enabled`,
 `auto`, or `disabled`:
 
 `format`, `checkstyle`, `pmd`, `spotbugs`, `errorprone`, `coverage`,
-`archunit`, `sonar`, `semgrep`, `trivy`, `dependency_check`.
+`archunit`, `sonar`, `semgrep`, `trivy`, `dependency_check`, `eslint`, `tsc`,
+`vitest`, `playwright`.
+
+The last four govern a JavaScript or TypeScript source tree. A repository with
+no such tree declares them `disabled`, which is a decision on the record rather
+than a gap in the roster.
 
 Gate-specific rules:
 
@@ -150,8 +155,39 @@ Gate-specific rules:
 - `trivy.scanners` — subset of `vuln`, `secret`, `misconfig`, `license`.
 - `trivy.severity`, `dependency_check.fail_on_cvss` — recognized severity names
   and 0–10 respectively.
+- `eslint.root`, `tsc.root`, `vitest.root`, `playwright.root` — repository-
+  relative directory holding the package manifest that owns the gate. Non-empty
+  when the mode is not `disabled`. There is no repository-wide default: a
+  front end is one tree among several in a polyglot repository, and guessing
+  which one would silently gate the wrong directory.
+- `eslint.command`, `tsc.command`, `vitest.command`, `playwright.command` — the
+  command to run, executed from the repository root. Non-empty when the mode is
+  not `disabled`. Unlike the Java gates, these carry no build-tool inference:
+  the suite detects Maven and Gradle, not package managers, so the command is
+  stated rather than derived.
 
 See `gate-resolution.md` for how a mode becomes an effective mode.
+
+## context
+
+Optional. Declares a code graph the workflow skills may query instead of
+rediscovering structure by reading files.
+
+| Field | Rule |
+| --- | --- |
+| `code_graph.mode` | `auto`, `enabled`, or `disabled`. `auto` means query it when it is present and proceed without it when it is not. |
+| `code_graph.tool` | Executable that answers the queries. Probed on `PATH`; never assumed installed. |
+| `code_graph.path` | Repository-relative path to the graph artifact. |
+| `code_graph.query_command` | Command template containing the `{question}` placeholder. A template without it is a violation: there would be no way to pass a query. |
+
+A graph is usable only when the tool resolves **and** the artifact exists at
+`code_graph.path`. Either one missing under `auto` is a recorded limitation,
+not a violation — the artifact is a rebuildable cache, and blocking a workflow
+on a cache that any clone can regenerate would trade a real stop for a
+convenience. Under `enabled`, the same absence is `BLOCKED`.
+
+Omitting the `context` block entirely is equivalent to
+`code_graph.mode: disabled`.
 
 ## testing, review, parallel, approvals
 

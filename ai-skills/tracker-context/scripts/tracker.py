@@ -250,6 +250,138 @@ def basic_auth(user: str, token: str) -> str:
     return "Basic " + base64.b64encode(raw).decode("ascii")
 
 
+# --- Markdown -> Atlassian Document Format ---------------------------------
+# Jira Cloud REST v3 accepts ADF, not markdown or wiki markup. Every rich-text
+# field a caller writes - a description, a comment - has to be converted, so the
+# converter lives here rather than in one operation. Unknown syntax degrades to
+# plain text: a document that renders imperfectly is recoverable, one the API
+# rejects is not.
+
+INLINE = re.compile(
+    r"(?P<code>`[^`]+`)"
+    r"|(?P<bold>\*\*[^*]+\*\*)"
+    r"|(?P<italic>(?<!\*)\*[^*]+\*(?!\*))"
+    r"|(?P<link>\[[^\]]+\]\([^)]+\))"
+    r"|(?P<url>https?://[^\s<>()]+)"
+)
+
+
+def inline_nodes(text: str) -> list[dict[str, Any]]:
+    """Split one line into ADF text nodes, honouring a small inline subset."""
+    nodes: list[dict[str, Any]] = []
+    pos = 0
+    for m in INLINE.finditer(text):
+        if m.start() > pos:
+            nodes.append({"type": "text", "text": text[pos:m.start()]})
+        kind, raw = m.lastgroup, m.group()
+        if kind == "code":
+            nodes.append({"type": "text", "text": raw[1:-1], "marks": [{"type": "code"}]})
+        elif kind == "bold":
+            nodes.append({"type": "text", "text": raw[2:-2], "marks": [{"type": "strong"}]})
+        elif kind == "italic":
+            nodes.append({"type": "text", "text": raw[1:-1], "marks": [{"type": "em"}]})
+        elif kind == "link":
+            label, _, href = raw[1:].partition("](")
+            nodes.append({"type": "text", "text": label,
+                          "marks": [{"type": "link", "attrs": {"href": href[:-1]}}]})
+        else:
+            nodes.append({"type": "text", "text": raw,
+                          "marks": [{"type": "link", "attrs": {"href": raw}}]})
+        pos = m.end()
+    if pos < len(text):
+        nodes.append({"type": "text", "text": text[pos:]})
+    return [n for n in nodes if n.get("text")]
+
+
+def para(text: str) -> dict[str, Any]:
+    nodes = inline_nodes(text)
+    return {"type": "paragraph", "content": nodes} if nodes else {"type": "paragraph"}
+
+
+def markdown_to_adf(md: str) -> dict[str, Any]:
+    """Markdown subset -> ADF document. Unknown syntax degrades to text."""
+    lines = md.replace("\r\n", "\n").split("\n")
+    content: list[dict[str, Any]] = []
+    buffer: list[str] = []
+
+    def flush() -> None:
+        if buffer:
+            content.append(para(" ".join(buffer).strip()))
+            buffer.clear()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            flush()
+            lang = stripped[3:].strip()
+            i += 1
+            code: list[str] = []
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                code.append(lines[i])
+                i += 1
+            node: dict[str, Any] = {"type": "codeBlock",
+                                    "content": [{"type": "text", "text": "\n".join(code) or " "}]}
+            if lang:
+                node["attrs"] = {"language": lang}
+            content.append(node)
+            i += 1
+            continue
+
+        if not stripped:
+            flush()
+            i += 1
+            continue
+
+        if re.match(r"^(-{3,}|\*{3,}|_{3,})$", stripped):
+            flush()
+            content.append({"type": "rule"})
+            i += 1
+            continue
+
+        heading = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+        if heading:
+            flush()
+            content.append({"type": "heading", "attrs": {"level": len(heading.group(1))},
+                            "content": inline_nodes(heading.group(2))})
+            i += 1
+            continue
+
+        if stripped.startswith(">"):
+            flush()
+            quote: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith(">"):
+                quote.append(lines[i].strip().lstrip(">").strip())
+                i += 1
+            content.append({"type": "blockquote", "content": [para(" ".join(quote))]})
+            continue
+
+        bullet = re.match(r"^\s*[-*+]\s+(.*)$", line)
+        number = re.match(r"^\s*\d+[.)]\s+(.*)$", line)
+        if bullet or number:
+            flush()
+            ordered = bool(number)
+            items: list[dict[str, Any]] = []
+            while i < len(lines):
+                m = (re.match(r"^\s*\d+[.)]\s+(.*)$", lines[i]) if ordered
+                     else re.match(r"^\s*[-*+]\s+(.*)$", lines[i]))
+                if not m:
+                    break
+                items.append({"type": "listItem", "content": [para(m.group(1))]})
+                i += 1
+            content.append({"type": "orderedList" if ordered else "bulletList",
+                            "content": items})
+            continue
+
+        buffer.append(stripped)
+        i += 1
+
+    flush()
+    return {"type": "doc", "version": 1, "content": content or [{"type": "paragraph"}]}
+
+
 def strip_html(value: str | None) -> str:
     if not value:
         return ""
@@ -298,6 +430,12 @@ class Adapter:
 
     def transition(self, item_id: str, target: str) -> dict[str, Any]:
         raise Unsupported(f"transitions are not supported by the {self.name} adapter")
+
+    def create(self, item_type: str, summary: str, body: str,
+               parent: str | None = None, component: str | None = None,
+               labels: list[str] | None = None,
+               dry_run: bool = False) -> dict[str, Any]:
+        raise Unsupported(f"creating an item is not supported by the {self.name} adapter")
 
 
 class NoneAdapter(Adapter):
@@ -407,13 +545,76 @@ class JiraAdapter(Adapter):
         return saved
 
     def comment(self, item_id: str, body: str) -> dict[str, Any]:
-        payload = {"body": {"type": "doc", "version": 1, "content": [
-            {"type": "paragraph", "content": [{"type": "text", "text": para}]}
-            for para in body.split("\n\n") if para.strip()
-        ]}}
+        payload = {"body": markdown_to_adf(body)}
         created = http(self._api(f"/issue/{item_id}/comment"),
                        method="POST", headers=self._auth(), body=payload)
         return {"id": created.get("id"), "created": created.get("created")}
+
+    def issue_types(self) -> list[str]:
+        key = self.settings.get("project_key")
+        if not key:
+            raise ToolError("tracker.jira.project_key is not configured", code=2)
+        data = http(self._api(f"/project/{key}"), headers=self._auth())
+        return [t.get("name", "") for t in data.get("issueTypes", []) if not t.get("subtask")]
+
+    def components(self) -> list[str]:
+        key = self.settings.get("project_key")
+        data = http(self._api(f"/project/{key}/components"), headers=self._auth())
+        return [c.get("name", "") for c in data]
+
+    def create(self, item_type: str, summary: str, body: str,
+               parent: str | None = None, component: str | None = None,
+               labels: list[str] | None = None,
+               dry_run: bool = False) -> dict[str, Any]:
+        key = self.settings.get("project_key")
+        if not key:
+            raise ToolError("tracker.jira.project_key is not configured", code=2)
+        if not summary.strip():
+            raise ToolError("an item needs a summary", code=2)
+        if not body.strip():
+            raise ToolError("an item needs a description; an empty one is not a defect report",
+                            code=2)
+
+        available = self.issue_types()
+        if item_type not in available:
+            raise ToolError(
+                f"issue type {item_type!r} does not exist in {key}. "
+                f"Available: {', '.join(available)}"
+            )
+
+        # Summary is capped by Jira at 255; 250 leaves room rather than risking a
+        # rejection on a boundary the API does not document precisely.
+        fields: dict[str, Any] = {
+            "project": {"key": key},
+            "summary": summary.strip()[:250],
+            "issuetype": {"name": item_type},
+            "description": markdown_to_adf(body),
+        }
+        if labels:
+            fields["labels"] = [re.sub(r"[^A-Za-z0-9_.-]+", "-", l.strip()).strip("-")
+                                for l in labels if l.strip()]
+        if parent:
+            fields["parent"] = {"key": parent}
+        if component:
+            existing = self.components()
+            if component not in existing:
+                raise ToolError(
+                    f"component {component!r} does not exist in {key}. "
+                    f"Available: {', '.join(existing)}"
+                )
+            fields["components"] = [{"name": component}]
+
+        # No assignee, priority, sprint, or fix version: triage belongs to the team,
+        # and a filed defect that arrives pre-triaged misrepresents who decided.
+        if dry_run:
+            return {"dry_run": True, "fields": fields}
+
+        created = http(self._api("/issue"), method="POST", headers=self._auth(),
+                       body={"fields": fields})
+        item_key = created.get("key")
+        base = str(self.settings.get("base_url", "")).rstrip("/")
+        return {"key": item_key, "url": f"{base}/browse/{item_key}" if base else None,
+                "type": item_type, "component": component}
 
     def transitions(self, item_id: str) -> list[dict[str, Any]]:
         data = http(self._api(f"/issue/{item_id}/transitions"), headers=self._auth())
@@ -819,6 +1020,8 @@ USAGE = """usage: tracker.sh <operation> [arguments]
   comment <id> <body-file>
   transitions <id>
   transition <id> <target-name>
+  create <type> <summary> <body-file> [--parent ID] [--component NAME]
+                                      [--label L]... [--dry-run]
 """
 
 
@@ -868,6 +1071,26 @@ def main(argv: list[str]) -> int:
         elif operation == "transition":
             a = need(2)
             result = adapter.transition(a[0], a[1])
+        elif operation == "create":
+            a = need(3)
+            body = Path(a[2]).read_text(encoding="utf-8")
+            opts, rest = {}, list(a[3:])
+            labels: list[str] = []
+            while rest:
+                flag = rest.pop(0)
+                if flag == "--dry-run":
+                    opts["dry_run"] = True
+                elif flag in ("--parent", "--component", "--label"):
+                    if not rest:
+                        raise ToolError(f"`{flag}` needs a value", code=2)
+                    value = rest.pop(0)
+                    if flag == "--label":
+                        labels.append(value)
+                    else:
+                        opts[flag[2:]] = value
+                else:
+                    raise ToolError(f"unknown option {flag!r}\n\n{USAGE}", code=2)
+            result = adapter.create(a[0], a[1], body, labels=labels or None, **opts)
         else:
             raise ToolError(f"unknown operation {operation!r}\n\n{USAGE}", code=2)
 
